@@ -42,6 +42,7 @@ procedure Tests is
    -- Dummy uninitialized vars for testing
    Empty_Chart : Clause_List (1 .. 0);
    Sols        : Solution_List (1 .. 4);
+   pragma Warnings (Off, "variable ""Sols"" is assigned but never read");
 begin
    -----------------------------------------------------------------------------
    Put_Line ("TEST 1 — Empty Chart Exception");
@@ -203,7 +204,7 @@ begin
       C1 : constant Clause := Create_Clause ([1, 2]);
       C2 : constant Clause := Create_Clause ([2, 3]);
       C3 : constant Clause := Create_Clause ([4]);
-      Costs : constant Cost_Map (1 .. 4) := (1 => 1, 2 => 100, 3 => 1, 4 => 1);
+      Costs : constant Cost_Map (1 .. 4) := [1 => 1, 2 => 100, 3 => 1, 4 => 1];
       R  : constant Solution_List := Minimum_Cost_Terms ([C1, C2, C3], Costs);
    begin
       Check ("12.1 Cost forces selection of higher-cardinality set", R'Length = 1);
@@ -221,6 +222,7 @@ begin
    begin
       declare
          R : constant Solution_List := Minimum_Cost_Terms ([C1, C2], Costs);
+         pragma Unreferenced (R);
       begin
          Check ("13.1 Missed exception", False);
       end;
