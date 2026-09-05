@@ -41,15 +41,17 @@ procedure Tests is
 
    -- Dummy uninitialized vars for testing
    Empty_Chart : Clause_List (1 .. 0);
-   Sols        : Solution_List (1 .. 4);
-   pragma Warnings (Off, "variable ""Sols"" is assigned but never read");
 begin
    -----------------------------------------------------------------------------
    Put_Line ("TEST 1 — Empty Chart Exception");
    -----------------------------------------------------------------------------
    begin
-      Sols := Multiply_And_Simplify (Empty_Chart);
-      Check ("1.1 Failed to raise exception", False);
+      declare
+         Sols : constant Solution_List := Multiply_And_Simplify (Empty_Chart);
+         pragma Unreferenced (Sols);
+      begin
+         Check ("1.1 Failed to raise exception", False);
+      end;
    exception
       when Empty_Chart_Error =>
          Check ("1.1 Raised Empty_Chart_Error", True);
@@ -63,8 +65,12 @@ begin
    declare
       Bad_Chart : constant Clause_List := [Empty_Clause, Create_Clause ([1])];
    begin
-      Sols := Multiply_And_Simplify (Bad_Chart);
-      Check ("2.1 Failed to raise exception", False);
+      declare
+         Sols : constant Solution_List := Multiply_And_Simplify (Bad_Chart);
+         pragma Unreferenced (Sols);
+      begin
+         Check ("2.1 Failed to raise exception", False);
+      end;
    exception
       when Empty_Clause_Error =>
          Check ("2.1 Raised Empty_Clause_Error", True);
