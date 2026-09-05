@@ -15,7 +15,7 @@ package Petricks_Method is
    -- Bounded up to Max_Prime_Implicants to avoid unconstrained array complexities.
    type Solution is record
       Count : Natural range 0 .. Max_Prime_Implicants := 0;
-      PIs   : PI_Array (1 .. Max_Prime_Implicants) := (others => 1);
+      PIs   : PI_Array (1 .. Max_Prime_Implicants) := [others => 1];
    end record;
 
    type Solution_List is array (Positive range <>) of Solution;
