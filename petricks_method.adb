@@ -1,74 +1,227 @@
-with Interfaces;
+with Ada.Containers.Vectors;
 
-package Petricks_Method is
-   pragma Preelaborate;
+package body Petricks_Method is
+   use Interfaces;
 
-   -- Maximum number of Prime Implicants supported to allow efficient 64-bit mask operations
-   Max_Prime_Implicants : constant := 64;
+   package Product_Vectors is new Ada.Containers.Vectors
+     (Index_Type => Positive, Element_Type => Unsigned_64);
+   subtype Product_Vector is Product_Vectors.Vector;
 
-   type Prime_Implicant_ID is new Positive range 1 .. Max_Prime_Implicants;
+   function Empty_Clause return Clause is
+   begin
+      return (Mask => 0);
+   end Empty_Clause;
 
-   -- Array of Prime Implicants (e.g., used to construct clauses or inspect solutions)
-   type PI_Array is array (Positive range <>) of Prime_Implicant_ID;
+   function Add (C : Clause; PI : Prime_Implicant_ID) return Clause is
+   begin
+      return (Mask => C.Mask or Shift_Left (Unsigned_64'(1), Integer (PI) - 1));
+   end Add;
 
-   -- A subset of Prime Implicants representing a valid cover (a solution).
-   -- Bounded up to Max_Prime_Implicants to avoid unconstrained array complexities.
-   type Solution is record
-      Count : Natural range 0 .. Max_Prime_Implicants := 0;
-      PIs   : PI_Array (1 .. Max_Prime_Implicants) := [others => 1];
-   end record;
+   function Create_Clause (PIs : PI_Array) return Clause is
+      Result : Clause := Empty_Clause;
+   begin
+      for PI of PIs loop
+         Result := Add (Result, PI);
+      end loop;
+      return Result;
+   end Create_Clause;
 
-   type Solution_List is array (Positive range <>) of Solution;
+   -- Helper: Converts a bitmask back into a Solution record, populating the PIs array
+   function To_Solution (Mask : Unsigned_64) return Solution is
+      Res : Solution;
+   begin
+      for I in Integer range 1 .. Max_Prime_Implicants loop
+         if (Mask and Shift_Left (Unsigned_64'(1), I - 1)) /= 0 then
+            Res.Count := Res.Count + 1;
+            Res.PIs (Res.Count) := Prime_Implicant_ID (I);
+         end if;
+      end loop;
+      return Res;
+   end To_Solution;
 
-   -- Represents a single column in the prime implicant chart (a Sum of PIs).
-   type Clause is private;
-   type Clause_List is array (Positive range <>) of Clause;
+   -- Helper: Returns True if subset mask A is fully contained within B
+   function Is_Subset (A, B : Unsigned_64) return Boolean is
+   begin
+      return (A and B) = A;
+   end Is_Subset;
 
-   -- Map for associating a cost (e.g., number of literals) with each Prime Implicant.
-   type Cost_Map is array (Prime_Implicant_ID range <>) of Natural;
+   -- Helper: Appends a term to a Sum-of-Products while applying Absorption Law (A + AB = A)
+   procedure Add_Term_Simplified (SOP : in out Product_Vector; T : Unsigned_64) is
+      Is_Super : Boolean := False;
+      I        : Positive := 1;
+   begin
+      -- 1. Check if T is absorbed by (is a superset of) any existing term
+      for Existing of SOP loop
+         if Is_Subset (Existing, T) then
+            Is_Super := True;
+            exit;
+         end if;
+      end loop;
 
-   -- Exceptions
-   Empty_Chart_Error      : exception;
-   Empty_Clause_Error     : exception;
-   Unsolvable_Chart_Error : exception;
-   Missing_Cost_Error     : exception;
+      if not Is_Super then
+         -- 2. T is minimal compared to current elements.
+         -- Remove any existing terms that are absorbed by T.
+         while I <= SOP.Last_Index loop
+            if Is_Subset (T, SOP.Element (I)) then
+               SOP.Delete (I);
+               -- Do not increment I because elements have shifted left
+            else
+               I := I + 1;
+            end if;
+         end loop;
 
-   -- Clause Construction
-   function Empty_Clause return Clause;
-   function Add (C : Clause; PI : Prime_Implicant_ID) return Clause
-     with Post => C /= Add'Result; -- Simplistic check to satisfy contract usage
-     
-   function Create_Clause (PIs : PI_Array) return Clause
-     with Pre => PIs'Length > 0;
+         -- 3. Add T safely
+         SOP.Append (T);
+      end if;
+   end Add_Term_Simplified;
 
-   -----------------------------------------------------------------------------
-   -- Core Algorithm: Petrick's Method
-   -----------------------------------------------------------------------------
-   -- Expands the Product-of-Sums (Chart) into a Sum-of-Products and returns
-   -- ALL non-dominated (minimal) combinations of Prime Implicants.
-   function Multiply_And_Simplify (Chart : Clause_List) return Solution_List
-     with Pre => Chart'Length > 0;
+   function Multiply_And_Simplify (Chart : Clause_List) return Solution_List is
+      Current_SOP : Product_Vector;
+      New_SOP     : Product_Vector;
+   begin
+      if Chart'Length = 0 then
+         raise Empty_Chart_Error;
+      end if;
 
-   -----------------------------------------------------------------------------
-   -- Variant 1: Minimum Terms
-   -----------------------------------------------------------------------------
-   -- Filters the full simplified expression to return only the solutions 
-   -- that use the absolute minimum number of Prime Implicants.
-   function Minimum_Terms (Chart : Clause_List) return Solution_List
-     with Pre => Chart'Length > 0;
+      for C of Chart loop
+         if C.Mask = 0 then
+            raise Empty_Clause_Error;
+         end if;
+      end loop;
 
-   -----------------------------------------------------------------------------
-   -- Variant 2: Minimum Cost Terms
-   -----------------------------------------------------------------------------
-   -- Filters the full simplified expression to return only the solutions 
-   -- that yield the lowest total cost based on the provided Cost_Map.
-   function Minimum_Cost_Terms (Chart : Clause_List; Costs : Cost_Map) return Solution_List
-     with Pre => Chart'Length > 0;
+      -- Initialize the SOP with the elements of the very first clause
+      for I in Integer range 1 .. Max_Prime_Implicants loop
+         if (Chart (Chart'First).Mask and Shift_Left (Unsigned_64'(1), I - 1)) /= 0 then
+            Current_SOP.Append (Shift_Left (Unsigned_64'(1), I - 1));
+         end if;
+      end loop;
 
-private
-   -- We encode a Clause (Sum of PIs) as a 64-bit unsigned integer bitmask.
-   -- Bit 0 represents PI 1, Bit 1 represents PI 2, etc.
-   type Clause is record
-      Mask : Interfaces.Unsigned_64 := 0;
-   end record;
+      -- Multiply (distribute) the remaining clauses sequentially
+      for I in Chart'First + 1 .. Chart'Last loop
+         New_SOP.Clear;
+         declare
+            C_Mask : constant Unsigned_64 := Chart (I).Mask;
+         begin
+            for Term of Current_SOP loop
+               for J in Integer range 1 .. Max_Prime_Implicants loop
+                  if (C_Mask and Shift_Left (Unsigned_64'(1), J - 1)) /= 0 then
+                     Add_Term_Simplified (New_SOP, Term or Shift_Left (Unsigned_64'(1), J - 1));
+                  end if;
+               end loop;
+            end loop;
+         end;
+         
+         Current_SOP := New_SOP;
+         
+         -- If SOP ever empties (impossible by Boolean rules given non-empty clauses, but defensive)
+         if Current_SOP.Is_Empty then
+            raise Unsolvable_Chart_Error;
+         end if;
+      end loop;
+
+      -- Convert internal SOP representation to the public Solution_List type
+      declare
+         Result : Solution_List (1 .. Integer (Current_SOP.Length));
+         Idx    : Positive := 1;
+      begin
+         for Term of Current_SOP loop
+            Result (Idx) := To_Solution (Term);
+            Idx := Idx + 1;
+         end loop;
+         return Result;
+      end;
+   end Multiply_And_Simplify;
+
+   function Minimum_Terms (Chart : Clause_List) return Solution_List is
+      All_Solutions : constant Solution_List := Multiply_And_Simplify (Chart);
+      Min_Count     : Natural := Max_Prime_Implicants + 1;
+      Match_Count   : Natural := 0;
+   begin
+      if All_Solutions'Length = 0 then
+         return All_Solutions;
+      end if;
+
+      for S of All_Solutions loop
+         if S.Count < Min_Count then
+            Min_Count := S.Count;
+         end if;
+      end loop;
+
+      for S of All_Solutions loop
+         if S.Count = Min_Count then
+            Match_Count := Match_Count + 1;
+         end if;
+      end loop;
+
+      declare
+         Result : Solution_List (1 .. Match_Count);
+         Idx    : Positive := 1;
+      begin
+         for S of All_Solutions loop
+            if S.Count = Min_Count then
+               Result (Idx) := S;
+               Idx := Idx + 1;
+            end if;
+         end loop;
+         return Result;
+      end;
+   end Minimum_Terms;
+
+   function Minimum_Cost_Terms (Chart : Clause_List; Costs : Cost_Map) return Solution_List is
+      All_Solutions : constant Solution_List := Multiply_And_Simplify (Chart);
+      Min_Cost      : Natural := Natural'Last;
+      Match_Count   : Natural := 0;
+
+      -- Calculates cost of a single solution
+      function Calc_Cost (S : Solution) return Natural is
+         C : Natural := 0;
+      begin
+         for I in 1 .. S.Count loop
+            if S.PIs (I) in Costs'Range then
+               C := C + Costs (S.PIs (I));
+            else
+               raise Missing_Cost_Error with "Cost not provided for PI " & 
+                 Prime_Implicant_ID'Image (S.PIs (I));
+            end if;
+         end loop;
+         return C;
+      end Calc_Cost;
+   begin
+      if All_Solutions'Length = 0 then
+         return All_Solutions;
+      end if;
+
+      -- Find absolute minimum cost across all valid minimal solutions
+      for S of All_Solutions loop
+         declare
+            Cost : constant Natural := Calc_Cost (S);
+         begin
+            if Cost < Min_Cost then
+               Min_Cost := Cost;
+            end if;
+         end;
+      end loop;
+
+      -- Count solutions that map to this minimal cost
+      for S of All_Solutions loop
+         if Calc_Cost (S) = Min_Cost then
+            Match_Count := Match_Count + 1;
+         end if;
+      end loop;
+
+      -- Extract and return
+      declare
+         Result : Solution_List (1 .. Match_Count);
+         Idx    : Positive := 1;
+      begin
+         for S of All_Solutions loop
+            if Calc_Cost (S) = Min_Cost then
+               Result (Idx) := S;
+               Idx := Idx + 1;
+            end if;
+         end loop;
+         return Result;
+      end;
+   end Minimum_Cost_Terms;
+
 end Petricks_Method;
